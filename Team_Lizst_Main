@@ -1,0 +1,562 @@
+/*
+ * main.c
+ *
+ *  Last Edited: April 2017
+ *      Author: James Bowen and Cameron Bailey
+ *
+ *  MSP430 USERS_MANUAL URL
+ *    http://www.ti.com/lit/ug/slau049f/slau049f.pdf
+ *
+ */
+
+#include  <msp430x26x.h>
+#include <stdlib.h>   // atoi()
+#include <stdio.h>    // sprintf()
+#include <string.h>
+#include "Gfa.h"
+#include "time.h"
+
+int  Assign(char option, long value, int Count);
+void InitSystem(void);
+void InitTimers(void);
+void InitUart(void);
+int  ParseString(char * theString, int index);
+void PrintDate(int month, int day, int year);
+void PrintDec(long value);
+void PrintTime(int hour, int min, int sec);
+void PrintString(char * theString);
+void SerialReply(char option);
+int  ServiceSerial(void);
+void Set_DCO(void);
+void ShowSingleVariable(char option);
+int  Uart1TxChar(uint8 c);
+long PeriodCalc(void);
+long CalcFrequency(long period);
+
+
+// Global Variables
+int TxCharCount = 0, TxReadIndex = 0, TxWriteIndex = 0;
+int RxWriteIndex = 0, RxReadIndex = 0;
+char TxBuffer[SER_BUFFER_SIZE], RxBuffer[SER_BUFFER_SIZE];
+int ISR_Flag = 0;
+tm_t clock_Time = {0, 0, 12, 7, 11, 2016, 1};   //(sec, min, hr, day, mon, year,0);
+
+int buffer0[Num_of_Results];
+int count = 0;
+char message[SER_BUFFER_SIZE];
+int int_n = 0;              //count values for port1 interrupt
+int int_count = 4;          //count values for port1 interrupt
+long ArrayEdge[3];
+
+/****************************************************************************/
+/*  Main function                                                           */
+/*  Function : main                                                         */
+/*      Parameters                                                          */
+/*          Input   :  Nothing                                              */
+/*          Output  :  Nothing                                              */
+/****************************************************************************/
+void main(void)
+{
+  long Period = 5333333, PeriodAvg = 5333333, ChargeCost = 0;
+  int battCurrent = 0, battSOC = 20, TotWsec = 0;
+  //int length;
+  long frequency = 0;
+  long calculatedPeriod = 0;
+
+  InitSystem();
+  InitUart();
+  InitTimers();                 // Enable tic timer
+  P1IES &= BIT4;                        //Initialize the system to look for a rising edge on port 1
+
+  while (1)
+  {
+    __bis_SR_register(LPM0_bits + GIE);       // Enter LPM0 w/ interrupts
+    if (ISR_Flag & ISRFLG_USB_BIT)
+    {
+      ISR_Flag &= ~ISRFLG_USB_BIT;
+      ServiceSerial();
+    }
+/*
+    if (int_count == 4)
+    {
+      P1IE = 0;                         //Turn off interrupts until frequency and period are calculated
+
+      calculatedPeriod = PeriodCalc();           //Calculate Period
+
+      frequency = CalcFrequency(calculatedPeriod);                 //Calculate Frequency Here
+
+    }
+*/
+
+
+  //  if (int_count == 4)
+  //  {
+        P1OUT ^= BIT0;
+        tm2time(&clock_Time);
+        sprintf(message,"X= %ld, %ld, %d, %d, %d, %ld, ", Period, PeriodAvg, battCurrent, battSOC, TotWsec, ChargeCost);        // SOC
+        PrintString(message);
+        sprintf(message, "%02d:%02d:%02d %02d/%02d/%02d\r\n", (int)clock_Time.tm_hour, (int)clock_Time.tm_min, (int)clock_Time.tm_sec, (int)clock_Time.tm_mon, (int)clock_Time.tm_mday, (int)clock_Time.tm_year);        PrintString(message);
+        clock_Time.tm_sec += 1;
+        int_count++;
+  //  }
+
+//    int_count++;                // Increment interrupt count so it resets once an interrupt is triggered
+    printf("Hello World/r/n");
+    //    P1IE |= BIT4;               // Re-enable interrupts
+  }
+}// main()
+
+/************************************   Assign ******************************
+Description: Assign takes the parsed commands and changes the operation of
+             the instrument.
+****************************************************************************/
+int Assign(char option, long value, int Count)
+{
+  int status = ERR_OK;
+  char message[SER_BUFFER_SIZE];
+
+  switch (option)       {
+    case 'd':  // Update Clock
+    case 'D':
+        if      (Count == 1)    clock_Time.tm_hour = (uint8)(value);
+        else if (Count == 2)    clock_Time.tm_min  = (uint8)(value);
+        else if (Count == 3)    clock_Time.tm_sec  = (uint8)(value);
+        else if (Count == 4)    clock_Time.tm_mday = (uint8)(value);
+        else if (Count == 5)    clock_Time.tm_mon  = (uint8)(value);
+        else if (Count == 6)    clock_Time.tm_year = value;
+        else if (Count == 7)    clock_Time.tm_isdst= (uint8)value;
+        break;
+      case 'f':             //  SampleRate
+      case 'F':
+//        TBCCR2 = (int)value;
+//        TBCCR0 = (int)value;
+        break;
+      case 'h':             //  HeadPhone ON/OFF control
+      case 'H':
+//          if      (value == 1) P2OUT &= ~BIT6;
+//          else if (value == 0) P2OUT |= BIT6;
+          break;
+      default:
+          sprintf (message, "%c:%d Invalid Assignment\r\n", option, value);
+          PrintString(message);
+          status = ERR_VALUE;
+          break;
+  }
+  return (status);
+}
+
+/***************************************************************************
+                     freqCalc
+     Description: This function takes the digital voltage values read
+                  into the chip and converts it into frequency based
+                  off of the sample rate (78125 Hz) of the ADC.
+****************************************************************************/
+long PeriodCalc(void)
+{
+    long avgRisePeriod = 0;
+    long avgLowPeriod = 0;
+    long period = 0;
+
+    avgRisePeriod = ArrayEdge[2] - ArrayEdge[0];
+    avgLowPeriod = ArrayEdge[3] - ArrayEdge[1];
+
+    period = (avgRisePeriod + avgLowPeriod) / 2;
+
+    return period;
+
+}
+
+long CalcFrequency(long period)
+{
+    long frequency = 0;
+
+    frequency = 1/period;
+
+    return frequency;
+}
+
+
+/*****************************************************************************
+    InitUART function - set constants & I/O
+   Description: Echo a received character, RX ISR used. Normal mode is LPM0.
+   USCI_A1 RX interrupt triggers TX Echo.
+   Baud rate divider with 1MHz = 1MHz/115200 = ~8.7 - MUST CHANGE if DCOCTL changes
+*****************************************************************************/
+void InitUart(void) {
+  P3SEL = 0xC0;                             // P3.6,7 = USCI_A1 TXD/RXD
+  UCA1CTL1 |= UCSSEL_2;                     // SMCLK
+  UCA1BR0 = 69;                              // 8MHz 115200
+  UCA1BR1 = 0;                              // 8MHz 115200
+  UCA1MCTL = UCBRS2;                        // Modulation UCBRSx = 4 for 8MHz
+  UCA1CTL1 &= ~UCSWRST;                     // **Initialize USCI state machine**
+  UC1IE |= UCA1RXIE;                          // Enable USCI_A0 RX interrupt
+}
+
+
+/*****************************************************************************
+    InitSystem function - set constants & I/O
+*****************************************************************************/
+void InitSystem(void) {
+  unsigned int i;
+
+  WDTCTL = WDTPW + WDTHOLD;     // Stop watchdog timer
+  // set first functionality to all ports
+  BCSCTL1 = CALBC1_8MHZ;                    // Set DCO to 1MHz , this should be 8 Mhz and the clock is divided to 1Mhz in inittimer function
+  DCOCTL = CALDCO_8MHZ;
+  BCSCTL2 = 0;                  // SMCLK = MCLK = DCOCLK / 1
+  for (i = 0xfffe; i > 0; i--);             // Delay for XTAL stabilization
+
+  P1SEL = 0x00;
+  P2SEL = 0x00;     // P2SEL must have BIT6/7 HIGH to enable 32kHz crystal, ACLK Active, P2.3 - P2.4 TA
+  P3SEL = 0x00;
+  P4SEL = 0x00;
+  P5SEL = 0x00;
+  P6SEL = 0x01;
+  P7SEL = 0x00;
+  P8SEL = 0x00;
+
+  //set pin direction and initialize outputs
+  P1DIR |= 0x09;                            // P1.3 output
+  TACCTL0 = 0x00;                // TACCR1 toggle, interrupt enabled
+  TACCTL1 = 0x00;
+  TACCTL2 = 0x00;
+  TBCCTL0 = 0x00;
+  TBCCTL1 = 0x00;
+  TBCCTL2 = 0x00;
+
+  ADC12MCTL0 = 0x0001+SREF_1;                       //
+  ADC12IFG = 0x00;
+  ADC12CTL1 = SHS_3 + CONSEQ_2 + ADC12SSEL_3;             // S&H TB.OUT1, rep. single chan, Use SMCLK
+  ADC12CTL0 = REF2_5V + REFON + ADC12ON + ENC;    // VRef ADC12 on, enabled
+
+  DMACTL0 = DMA0TSEL_6;
+
+  DMA0SA = (void (*)())&ADC12MEM0;          // DMA source address is the adc12 module
+  DMA0DA = (void (*)())&buffer0[0];         // DMA source desitination is buffer 0
+  DMA0SZ = 0x800;                               // set DMA transfer size to 2048
+  DMA0CTL = DMADSTINCR_3 + DMADT_4 + DMAIE + DMAEN;                // Sng rpt, config
+}
+
+/***************************************************************************
+                       InitTimers
+    Description: This function initializes the tic timer
+                 TimerA is set as a up count timer with ACLK (32KHz)
+                   as source, count up to value in TACCR0,
+                   interrupt on compare (2 Hz)
+
+    This must be called after SetDCO
+***************************************************************************/
+void InitTimers(void)
+{
+#define AdcRate 100
+
+  TACTL = 0;                            // Resets all bits in the Timer A register
+  TACTL = MC_0 + TASSEL_2 + TACLR + TAIE + ID_3;      // Use Timer A, Stop Timer A, TASSEL sets Timer A to use SMCLK, clear TAR, TAIE enables Timer A interupts, ID_3 Sets SMCLK to a division of 8, SMCLK is now 1MHz
+  TACCTL0 = CCIE;                       // CCR0 (Capture Compare Control Register 0) interrupt enabled
+  TACCR0 = 250000;                       // The limit Timer A will count to before reseting back to 0 count to (ours set to 500000 cycles, so half second)
+  TACTL |= MC_1;                        // Start Timer_a in upmode
+
+  TBCCR1 = (AdcRate >> 1);              // Trigger for ADC12 SC
+  TBCCTL1 = OUTMOD_7;                   // Reset OUT1 on EQU1, set on EQU0, pg239 users manual, TB is high until Tlach is reached. Then Timer is disabled till 0
+
+  TBCTL = TBSSEL_2 + MC_1 + TBCLR;      // Use SMCLK, up mode, clear TBR
+}
+
+/****************************************************************************
+                            ParseString
+Description: Separate leading character (command) and terminator '=' from
+             the data.  Data is comma separated.
+****************************************************************************/
+int ParseString(char * theString, int index)
+{
+    long value;
+    int Count = 0;
+    char action[SER_BUFFER_SIZE + 1];
+    char *pTest;
+
+    pTest = strtok(theString, ",");
+    do  {
+        strncpy(&action[0], pTest, (unsigned long)index + 1);
+        if (Count == 0) value = atoi(&action[2]);
+        else            value = atoi(&action[0]);
+        Assign((char)theString[0], value, Count);
+        Count++;
+        pTest = strtok(NULL,",");
+    }   while (pTest != NULL);
+    return (Count);
+}
+
+
+/****************************************************************************
+                            PrintDate
+Description: Prints a formatted date.
+****************************************************************************/
+void PrintDate(int month, int day, int year)
+{
+    int i, j;
+    char digit[11];
+
+    digit[0] = ' ';
+    digit[1] = '0' + (unsigned char) (month / 10);
+    digit[2] = '0' + (unsigned char) (month % 10);
+    digit[3] = '/';
+    digit[4] = '0' + (unsigned char) (day / 10);
+    digit[5] = '0' + (unsigned char) (day % 10);
+    digit[6] = '/';
+    digit[7] = '0' + (unsigned char) (year / 1000);
+    i = year / 1000;
+    i *= 1000;
+    j = year - i;
+    digit[8] = '0' + (unsigned char) (j / 100);
+    i = j / 100;
+    i *= 100;
+    j -= i;
+    digit[9] = '0' + (unsigned char) (j / 10);
+    digit[10] = '0' + (unsigned char) (j % 10);
+    strcat(message, digit);   //  PrintString(digit);
+}
+
+
+/****************************************************************************
+                            PrintDec
+Description: Prints a long value as a decimal.
+****************************************************************************/
+void PrintDec(long value)
+{
+    #define MAX_DECIMAL 12
+
+    int i, NegFlag = 0;
+    long iInt = value;
+    char digit[MAX_DECIMAL + 1];
+
+    iInt = value;
+    if (iInt & 0x80000000)      {
+            iInt ^= 0xFFFFFFFF;
+            iInt += 1;
+            NegFlag = 1;
+    }
+    digit[MAX_DECIMAL] = '\0';
+    for (i = MAX_DECIMAL - 1; i >= 0; i--)  {
+        digit[i] = '0' + (unsigned char) (iInt % 10);
+        iInt = iInt / 10;
+        if (iInt == 0) break;
+    }
+    if (NegFlag)   digit[--i] = '-';
+    strcat(message, &digit[i]); // PrintString(&digit[i]);
+}
+
+
+/****************************************************************************
+                            PrintTime
+Description: Prints a formatted time.
+****************************************************************************/
+void PrintTime(int hour, int min, int sec)
+{
+    char digit[9];
+
+    digit[0] = ' ';
+    digit[1] = '0' + (unsigned char) (hour / 10);
+    digit[2] = '0' + (unsigned char) (hour % 10);
+    digit[3] = ':';
+    digit[4] = '0' + (unsigned char) (min / 10);
+    digit[5] = '0' + (unsigned char) (min % 10);
+    digit[6] = ':';
+    digit[7] = '0' + (unsigned char) (sec / 10);
+    digit[8] = '0' + (unsigned char) (sec % 10);
+    strcat(message, digit);     // PrintString(digit);
+}
+
+
+/******************************* PrintString ********************************
+
+Description: Print null terminated ascii string to USB port
+****************************************************************************/
+void PrintString(char * theString)
+{
+  unsigned int i;
+  int stringLength = strlen(theString);
+
+  for (i = 0; i < stringLength; i++)    {
+    if (theString[i] == '\0') break;
+    while (!(UC1IFG & UCA1TXIFG));
+    UCA1TXBUF = theString[i];
+    // Uart1TxChar(theString[i]);
+  }
+}
+
+// *********************** SerialReply **************************************
+//  Provide a mechanism to query the system
+// **************************************************************************
+void SerialReply(char option)
+{
+  switch (option)
+  {
+      case 'p': // Recording Period Dwell
+      case 'P':
+          PrintString("P=");
+          PrintString("%\r\n");
+          break;
+
+      default:
+       PrintString("---\r\n");
+       break;
+  }
+}
+
+/****************************************************************************
+                      ServiceSerial
+Description: Process received USB data
+****************************************************************************/
+int ServiceSerial(void)
+{
+  static int menuFlag = 1, CommaCnt = 0;
+  static uint8 theChar, index = 0;
+  static char rxBuff[SER_BUFFER_SIZE];
+  int status = 0;
+
+  while (RxWriteIndex != RxReadIndex)   {
+    theChar = RxBuffer[RxReadIndex];
+    RxReadIndex = ((RxReadIndex + 1) & (SER_BUFFER_SIZE - 1));
+    switch(theChar)
+    {
+      case 0x00:
+          break;
+      case CR:    // carriage return
+          menuFlag = 0;
+          PrintString("\r\n");
+          rxBuff[index] = (char)0x00;   // Null terminate the string
+          if (rxBuff[1] == '=') {
+             status = ParseString((char *) rxBuff, index);
+          }
+          else if (rxBuff[1] == '?')    {
+             SerialReply((char)rxBuff[0]);
+          }
+          else  status = -1;
+            for (index = 0; index < (SER_BUFFER_SIZE - 1); index++) rxBuff[index] = '\0';
+            index = 0;
+            break;
+      case ',':
+          rxBuff[index] = (char)theChar;
+          index++;
+          CommaCnt++;
+          Uart1TxChar(theChar);
+          break;
+      case BS:    // backspace
+          if (index > 0)        {
+            index--;
+            rxBuff[index] = (char) 0x00;
+          }
+          Uart1TxChar(theChar);
+          break;
+      default:
+          rxBuff[index] = (char) theChar;
+          index++;
+          index &= (SER_BUFFER_SIZE - 1);
+          Uart1TxChar(theChar);
+          break;
+    }
+    if (0 == menuFlag) break;
+  } // while (RxWriteIndex != RxReadIndex);
+  return ( (int) status);
+}
+
+// Load TxBuffer and enable TX interrupt to send character out the USB Serial Port
+int Uart1TxChar(uint8 c)
+{
+  UC1IE &= ~UCA1TXIE;
+  TxBuffer[TxWriteIndex++] = c;
+  TxWriteIndex &= (SER_BUFFER_SIZE - 1);
+//  TxCharCount++;
+  UC1IE |= UCA1TXIE;
+  return (int)TxWriteIndex;
+}
+
+//***************************************************************************
+// Timer A1 interrupt service routine
+#pragma vector=TIMERA0_VECTOR
+__interrupt void Timer_A (void)
+{
+  P1OUT ^= 0x08;                            // Toggle P1.3
+  ISR_Flag |= ISRFLG_TWOHZ;
+  __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
+}
+
+//***************************************************************************
+#pragma vector=USCIAB1RX_VECTOR
+__interrupt void USCI1RX_ISR(void)
+{
+  ISR_Flag |= ISRFLG_USB_BIT;
+  while (!(UC1IFG & UCA1TXIFG));                // USCI_A0 TX buffer ready?
+
+  RxBuffer[RxWriteIndex++] = UCA1RXBUF;
+  RxWriteIndex &= (SER_BUFFER_SIZE - 1);
+
+  __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
+}
+
+
+//***************************************************************************
+#pragma vector=USCIAB1TX_VECTOR
+__interrupt void USCI1TX_ISR(void)
+{
+  if (TxReadIndex != TxWriteIndex)  {
+    UCA1TXBUF = TxBuffer[TxReadIndex++];
+    TxReadIndex &= (SER_BUFFER_SIZE -1);
+//    TxCharCount--;
+  }
+  else UC1IE &= ~UCA1TXIE;
+  __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
+}
+
+// The PORT1_VECTOR responds to square wave input signals
+#pragma vector=PORT1_VECTOR
+__interrupt void Port_1(void)
+{
+  if (P1IFG & BIT4)                                           // received pin interrupt - lowest priority interrupt
+  {
+    P1IE = 0;                                                           // disable pin interrupt until done processing this pin interrupt
+    P1IFG = 0;                                                        // clear pin interrupt flag
+
+    if (int_count == 5)
+     {
+      int_n = 0;
+     }
+
+    if (P1IN & BIT4)                                            // Make sure input signal is HIGH
+    {
+      ArrayEdge[int_n] = TAR;                                                // read timer counter and store value in TarCal
+      P1IES |= 0;                                              // Next interrupt to be on falling edge
+      int_n++;                      //Increment our array location for the falling edge
+
+//      ISR_Flag |= PORT1_ISR;        // flag for main loop
+    }
+
+    else                        //If not a rising edge then then a falling edge
+    {
+      ArrayEdge[int_n] = TAR;
+      P1IES &= ~BIT4;                                           // Falling edge interrupt - you may not want to do this unless you want to measure both edges of square wave
+      int_n++;
+
+//      ISR_FLAG |= PORT1_ISR
+    }
+
+    int_count++;
+  }
+
+    P1IE |= BIT4;                                                   // reenable pin 1.4 interrupt
+}
+
+// DMA interrupt service routine
+#pragma vector = DMA_VECTOR
+__interrupt void DMA_ISR(void)
+{
+  DMA0CTL &= ~DMAEN;                        // Disables DMA
+  DMA0CTL &= ~DMAIFG;                       // Clear DMA1 interrupt flag
+//  ISR_Flag |= ISRFLG_DMA_BIT;
+
+  DMA0DA = (void(*)())&buffer0[0];
+
+  DMA0CTL |= ~DMAEN;                        // Enable DMA
+
+  _bic_SR_register_on_exit(LPM0_bits);
+}
