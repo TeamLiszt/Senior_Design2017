@@ -30,8 +30,8 @@ int  ServiceSerial(void);
 void Set_DCO(void);
 void ShowSingleVariable(char option);
 int  Uart1TxChar(uint8 c);
-long PeriodCalc(void);
-long CalcFrequency(long period);
+double PeriodCalc(void);
+double CalcFrequency(double period);
 
 
 // Global Variables
@@ -46,7 +46,8 @@ int count = 0;
 char message[SER_BUFFER_SIZE];
 int int_n = 0;              //count values for port1 interrupt
 int int_count = 4;          //count values for port1 interrupt
-long ArrayEdge[3];
+long ArrayEdge[4];
+int TIMER_A_SET_BIT = 0;
 
 /****************************************************************************/
 /*  Main function                                                           */
@@ -60,23 +61,23 @@ void main(void)
   long Period = 5333333, PeriodAvg = 5333333, ChargeCost = 0;
   int battCurrent = 0, battSOC = 20, TotWsec = 0;
   //int length;
-  long frequency = 0;
-  long calculatedPeriod = 0;
+  double frequency = 0;
+  double calculatedPeriod = 0;
 
   InitSystem();
   InitUart();
   InitTimers();                 // Enable tic timer
-  P1IES &= BIT4;                        //Initialize the system to look for a rising edge on port 1
+  P1IES &= ~BIT4;                        //Initialize the system to look for a rising edge on port 1
 
   while (1)
   {
-    __bis_SR_register(LPM0_bits + GIE);       // Enter LPM0 w/ interrupts
+ /*   __bis_SR_register(LPM0_bits + GIE);       // Enter LPM0 w/ interrupts
     if (ISR_Flag & ISRFLG_USB_BIT)
     {
       ISR_Flag &= ~ISRFLG_USB_BIT;
       ServiceSerial();
     }
-/*
+
     if (int_count == 4)
     {
       P1IE = 0;                         //Turn off interrupts until frequency and period are calculated
@@ -88,8 +89,7 @@ void main(void)
     }
 */
 
-
-  //  if (int_count == 4)
+  //  if (int_count == 4 && TIMER_A_SET_BIT == 20)              //If we have 4 periods and 1 second worth of Timer A ticks, output data
   //  {
         P1OUT ^= BIT0;
         tm2time(&clock_Time);
@@ -99,7 +99,7 @@ void main(void)
         clock_Time.tm_sec += 1;
         int_count++;
   //  }
-
+//    TIMER_A_SET_BIT = 0;        // Reset the timer Count
 //    int_count++;                // Increment interrupt count so it resets once an interrupt is triggered
     printf("Hello World/r/n");
     //    P1IE |= BIT4;               // Re-enable interrupts
@@ -151,24 +151,26 @@ int Assign(char option, long value, int Count)
                   into the chip and converts it into frequency based
                   off of the sample rate (78125 Hz) of the ADC.
 ****************************************************************************/
-long PeriodCalc(void)
+double PeriodCalc(void)
 {
-    long avgRisePeriod = 0;
-    long avgLowPeriod = 0;
-    long period = 0;
+    double avgRisePeriod = 0;
+    double avgLowPeriod = 0;
+    double period = 0;
 
     avgRisePeriod = ArrayEdge[2] - ArrayEdge[0];
     avgLowPeriod = ArrayEdge[3] - ArrayEdge[1];
-
+    
     period = (avgRisePeriod + avgLowPeriod) / 2;
 
+    period = period * 1000000;          // Converter 1Mhz sample rate to second
+    
     return period;
 
 }
 
-long CalcFrequency(long period)
+double CalcFrequency(double period)
 {
-    long frequency = 0;
+    double frequency = 0;
 
     frequency = 1/period;
 
@@ -200,9 +202,9 @@ void InitSystem(void) {
   unsigned int i;
 
   WDTCTL = WDTPW + WDTHOLD;     // Stop watchdog timer
-  // set first functionality to all ports
-  BCSCTL1 = CALBC1_8MHZ;                    // Set DCO to 1MHz , this should be 8 Mhz and the clock is divided to 1Mhz in inittimer function
-  DCOCTL = CALDCO_8MHZ;
+
+  BCSCTL1 = CALBC1_8MHZ;                    // set first functionality to all ports
+  DCOCTL = CALDCO_8MHZ;                       // Set DCO to 1MHz , this should be 8 Mhz and the clock is divided to 1Mhz in inittimer function
   BCSCTL2 = 0;                  // SMCLK = MCLK = DCOCLK / 1
   for (i = 0xfffe; i > 0; i--);             // Delay for XTAL stabilization
 
@@ -253,7 +255,7 @@ void InitTimers(void)
   TACTL = 0;                            // Resets all bits in the Timer A register
   TACTL = MC_0 + TASSEL_2 + TACLR + TAIE + ID_3;      // Use Timer A, Stop Timer A, TASSEL sets Timer A to use SMCLK, clear TAR, TAIE enables Timer A interupts, ID_3 Sets SMCLK to a division of 8, SMCLK is now 1MHz
   TACCTL0 = CCIE;                       // CCR0 (Capture Compare Control Register 0) interrupt enabled
-  TACCR0 = 250000;                       // The limit Timer A will count to before reseting back to 0 count to (ours set to 500000 cycles, so half second)
+  TACCR0 = 50000;                       // The limit Timer A will count to before reseting back to 0 count to (ours set to 500000 cycles, so half second)
   TACTL |= MC_1;                        // Start Timer_a in upmode
 
   TBCCR1 = (AdcRate >> 1);              // Trigger for ADC12 SC
@@ -478,6 +480,13 @@ __interrupt void Timer_A (void)
 {
   P1OUT ^= 0x08;                            // Toggle P1.3
   ISR_Flag |= ISRFLG_TWOHZ;
+  
+  if(CCIFG)
+  {
+      TIMER_A_SET_BIT++;                    // Increment a counter, after 50 counts, 1 second has passed
+  }
+  CCIFG = 0;                                // Clear CCIFG
+  
   __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
 }
 
@@ -515,7 +524,7 @@ __interrupt void Port_1(void)
   if (P1IFG & BIT4)                                           // received pin interrupt - lowest priority interrupt
   {
     P1IE = 0;                                                           // disable pin interrupt until done processing this pin interrupt
-    P1IFG = 0;                                                        // clear pin interrupt flag
+    P1IFG &= ~0x01;                                                        // clear pin interrupt flag
 
     if (int_count == 5)
      {
@@ -525,10 +534,8 @@ __interrupt void Port_1(void)
     if (P1IN & BIT4)                                            // Make sure input signal is HIGH
     {
       ArrayEdge[int_n] = TAR;                                                // read timer counter and store value in TarCal
-      P1IES |= 0;                                              // Next interrupt to be on falling edge
+      P1IES |= BIT4;                                              // Next interrupt to be on falling edge
       int_n++;                      //Increment our array location for the falling edge
-
-//      ISR_Flag |= PORT1_ISR;        // flag for main loop
     }
 
     else                        //If not a rising edge then then a falling edge
@@ -536,8 +543,6 @@ __interrupt void Port_1(void)
       ArrayEdge[int_n] = TAR;
       P1IES &= ~BIT4;                                           // Falling edge interrupt - you may not want to do this unless you want to measure both edges of square wave
       int_n++;
-
-//      ISR_FLAG |= PORT1_ISR
     }
 
     int_count++;
@@ -560,3 +565,27 @@ __interrupt void DMA_ISR(void)
 
   _bic_SR_register_on_exit(LPM0_bits);
 }
+
+
+
+#ifdef UART_PRINTF
+int fputc(int _c, register FILE *_fp)
+{
+    while (!(UC1IFG & UCA1TXIFG));                // USCI_A0 TX buffer ready?
+    UCA1TXBUF = (unsigned char) _c;
+    return (unsigned char)(_c);
+}
+
+int fputs(const char *_ptr, register FILE *_fp)
+{
+    unsigned int i, len;
+
+    len = strlen(_ptr);
+    for (i=0; i<len; i++)
+    {
+        while (!(UC1IFG & UCA1TXIFG));                // USCI_A0 TX buffer ready?
+        UCA1TXBUF = (unsigned char) _ptr[i];
+    }
+    return len;
+}
+#endif
