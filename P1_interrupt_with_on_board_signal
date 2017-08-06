@@ -1,3 +1,9 @@
+// This Program uses a ~60Hz signal off P2 Pin 0 to trigger an interupt on Port1 Pin1
+// P1 Pin 0 is connected to an LED to display the interrupt triggering. Delays can be changed in main.
+// Updated 8/6/2017
+
+
+
 #include <msp430x26x.h>
 
 volatile int flag = 0;
@@ -6,7 +12,7 @@ void main()
 {
     WDTCTL = WDTPW + WDTHOLD; // Stop watchdog timer
     DCOCTL = CALDCO_8MHZ;
-    BCSCTL2 = 0;
+    BCSCTL2 = 0;               // Configure Basic Clock Module
 
     P2DIR |= BIT0; // Set P1.0 output direction
     P2OUT &= ~BIT0; // Set the LEDs off
@@ -31,6 +37,7 @@ void main()
         {
             P1OUT ^= BIT0;
             flag = 0;
+            _delay_cycles(1000000);
         }
     }
 }
