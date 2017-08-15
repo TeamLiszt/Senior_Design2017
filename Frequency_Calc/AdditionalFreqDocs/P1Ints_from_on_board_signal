@@ -1,0 +1,66 @@
+// This Program uses a ~60Hz signal off P2 Pin 0 to trigger an interupt on Port1 Pin1
+// P1 Pin 0 is connected to an LED to display the interrupt triggering. Delays can be changed in main.
+// Updated 8/6/2017
+
+
+
+#include <msp430x26x.h>
+
+volatile int flag = 0;
+
+void main()
+{
+    WDTCTL = WDTPW + WDTHOLD; // Stop watchdog timer
+    DCOCTL = CALDCO_8MHZ;
+    BCSCTL2 = 0;               // Configure Basic Clock Module
+
+    P2DIR |= BIT0; // Set P1.0 output direction
+    P2OUT &= ~BIT0; // Set the LEDs off
+
+    TBCCTL0 = CCIE;
+    TBCTL = TASSEL_2 + MC_1; // Set the timer A to SMCLCK, UpMode
+    // Clear the timer and enable timer interrupt
+    TBCCR0 = 9800;
+
+    P1SEL &= (~BIT1); // Set P1.1 SEL as GPIO (Setting to a 1 disables P1 interrupts, setting to 0 enables interrupts, currently set to 0)
+    P1DIR |= (BIT0);   // Set P1.0 as Output (pin 12 on the board)
+    P1DIR &= (~BIT1); // Set P1.1 SEL as Input (pin 13 on the board)
+    P1IES |= (BIT0); // Rising Edge Interrupt
+    P1IFG &= (~BIT1); // Clear interrupt flag
+    P1IE |= (BIT1); // Enable interrupt for Port 1
+    __enable_interrupt(); // Enable Global Interrupts
+
+
+    while(1)
+    {
+        if(flag == 1)
+        {
+            P1OUT ^= BIT0;
+            flag = 0;
+            _delay_cycles(1000000);
+        }
+    }
+}
+
+// Port 1 interrupt service routine
+#pragma vector=PORT1_VECTOR
+__interrupt void Port_1(void)
+{
+    flag = 1;
+ // P1OUT ^= BIT0;
+    P1IFG &= (~BIT1); // P1.1 IFG clear
+
+
+    __enable_interrupt();
+}
+
+
+#pragma vector=TIMERB0_VECTOR
+__interrupt void Timer_B (void)
+{
+//timerCount = (timerCount + 1) % 5;
+//if(timerCount == 0)
+//    {
+        P2OUT ^= BIT0;
+//    }
+}
