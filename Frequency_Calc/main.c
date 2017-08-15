@@ -1,7 +1,7 @@
 /*
  * main.c
  *
- *  Last Edited: April 2017
+ *  Last Edited: August 15, 2017
  *      Author: James Bowen and Cameron Bailey
  *
  *  MSP430 USERS_MANUAL URL
