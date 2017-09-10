@@ -61,13 +61,8 @@ void main(void)
   while (1)
   {
 
-    if (Timer_Flag == 1)           // If Timer_Flag ==1 then 0.05s has passed, set in TimerA_ISR
+    if (Timer_Flag == 16)               // 0.8 seconds have passed, toggle led and print across screen
     {
-      LoopCount++;
-      Timer_Flag = 0;
-    }
-
-    if (LoopCount == 16) {                 // loopcount == 20, toggle led and print across screen every second
         P1OUT ^= BIT0;                      // Toggle P1.0 LED
 
         DMA0CTL &= ~DMAEN;          //Turn off DMA
@@ -77,12 +72,12 @@ void main(void)
 
         for (i = 0; i < 500; i++)               //Print each value gathered from the DMA, Num_Results is 500
         {
-            sprintf(message,"%d \r\n ", buffer0[i]);
+            printf(message,"%d \r\n ", buffer0[i]);
             PrintString(message);
         }
     }
 
-    else if (LoopCount == 20) {                  // loopcount == 20, re-initialize timerb, reset DMA, enable dma, reset loopcount
+    else if (Timer_Flag == 20) {                  // loopcount == 20, re-initialize timerb, reset DMA, enable dma, reset loopcount
         TBCTL = TBSSEL_2 + MC_1 + TBCLR;          // SMCLK, clear TBR, up mode
 //        DMA0DA = (__SFR_FARPTR)(unsigned int) &buffer0[0];
         DMA0DA = (void (*)())&buffer0[0];
@@ -471,7 +466,7 @@ int Uart1TxChar(uint8 c)
 #pragma vector=TIMERA0_VECTOR
 __interrupt void Timer_A (void)
 {
-  Timer_Flag = 1;
+  Timer_Flag++;
   ISR_Flag |= ISRFLG_TWOHZ;
   __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
 }
