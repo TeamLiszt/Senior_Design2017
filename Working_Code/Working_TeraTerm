@@ -1,0 +1,768 @@
+/*
+ * main.c
+ *
+ *  Created on: March 2016
+ *      Author: Aaron Miyasaki and Jacob Greig-Prine
+ */
+
+#include  <msp430x26x.h>
+#include <stdlib.h>   // atoi()
+#include <stdio.h>    // sprintf()
+#include <string.h>
+#include "Gfa.h"
+#include "time.h"
+
+int  Assign(char option, long value, int Count);
+void InitSystem(void);
+void InitTimers(void);
+void InitUart(void);
+int  ParseString(char * theString, int index);
+void PrintDate(int month, int day, int year);
+void PrintDec(long value);
+void PrintTime(int hour, int min, int sec);
+void PrintString(char * theString);
+void SerialReply(char option);
+int  ServiceSerial(void);
+void Set_DCO(void);
+void ShowSingleVariable(char option);
+int  Uart1TxChar(uint8 c);
+float DigitalToAnalog(float value);
+//float FrequencyCalc (int index1, int index2);
+
+// Global Variables
+int TxCharCount = 0, TxReadIndex = 0, TxWriteIndex = 0;
+int RxWriteIndex = 0, RxReadIndex = 0;
+char TxBuffer[SER_BUFFER_SIZE], RxBuffer[SER_BUFFER_SIZE];
+int ISR_Flag = 0;
+int DMA_Flag = 0;
+tm_t clock_Time = {0, 0, 12, 7, 11, 2016, 1};   //(sec, min, hr, day, mon, year,0);
+
+volatile unsigned int buffer0[Num_of_Results];
+volatile unsigned int buffer1[Num_of_Results];
+char message[SER_BUFFER_SIZE];
+
+/****************************************************************************/
+/*  Main function                                                           */
+/*  Function : main                                                         */
+/*      Parameters                                                          */
+/*          Input   :  Nothing                                              */
+/*          Output  :  Nothing                                              */
+/****************************************************************************/
+void main(void)
+{
+  int i = 0;
+  int minIndex1 = 0, minIndex2 = 0, maxIndex1, maxIndex2;
+  float max1 = 0, max2 = 0, min1 = 5000, min2 = 5000, RMSvalue = 0;
+  float frequency1 = 0, frequency2 = 0, period = 0, amax1 = 0.0, analog = 0;
+
+  int isTop = 0;                    // 0 is false 1 is true
+  long midPointValue = 0;
+  int skipIndex = Num_of_Results / 16;
+  int midpoints[4] = {0,0,0,0}, midPointIndex = 0;
+  int midpoints1[4] = {0,0,0,0};
+
+  InitSystem();
+  InitUart();
+  InitTimers();                 // Enable tic timer
+  ServiceSerial();
+
+  while (1) {
+    __bis_SR_register(LPM0_bits + GIE);       // Enter LPM0 w/ interrupts
+
+    if (DMA_Flag == 1)
+    {
+        DMA0CTL &= ~DMAEN;                              //Turn Off DMA
+        DMA1CTL &= ~DMAEN;
+
+        // CALC ARRAY AVERAGE
+        for(i = 0; i < Num_of_Results; i++)
+        {
+            midPointValue += buffer0[i];
+        }
+        midPointValue /= Num_of_Results;
+
+        // CHECK IF WE'RE ABOVE MIDPOINT OR BELOW
+        if (buffer0[0] > midPointValue)
+        {
+            isTop = 1;
+        }
+
+        // CALC MIN AND MAX
+        for (i = 0; i < Num_of_Results/2; i++)
+        {
+            if ((isTop == 1) && (buffer0[i] > max1))
+            {
+                max1 = buffer0[i];
+                maxIndex1 = i;
+            }
+            else if ((isTop == 0) && (buffer0[i] < min1))
+            {
+                min1 = buffer0[i];
+                minIndex1 = i;
+            }
+            else if ((isTop == 1) && (buffer0[i] < midPointValue))
+            {
+                midpoints1[midPointIndex] = i;
+                midPointIndex++;
+                isTop = 0;
+                i += skipIndex;
+            }
+            else if ((isTop == 0) && (buffer0[i] > midPointValue))
+            {
+                midpoints1[midPointIndex] = i;
+                midPointIndex++;
+                isTop = 1;
+                i += skipIndex;
+            }
+        }
+
+        for (i = Num_of_Results/2; i < Num_of_Results; i++)
+        {
+            if ((isTop == 1) && (buffer0[i] > max2))
+            {
+                max2 = buffer0[i];
+                maxIndex2 = i;
+            }
+            else if ((isTop == 0) && (buffer0[i] < min2))
+            {
+                min2 = buffer0[i];
+                minIndex2 = i;
+            }
+            else if (isTop == 1 && (buffer0[i] < midPointValue))
+            {
+                midpoints1[midPointIndex] = i;
+                midPointIndex++;
+                isTop = 0;
+                i += skipIndex;
+            }
+            else if (isTop == 0 && (buffer0[i] > midPointValue))
+            {
+                midpoints1[midPointIndex] = i;
+                midPointIndex++;
+                isTop = 1;
+                i += skipIndex;
+            }
+         }
+
+        // CALCULATE PERIOD AND FREQUENCY
+
+        period = midpoints1[3] - midpoints1[1];
+        period = period * 0.0000029;
+        frequency2 = 1 / period;
+
+        period = midpoints1[2] - midpoints1[0];
+        period = period * 0.0000029;
+        frequency1 = 1 / period;
+
+        // CALC RMS VALUE
+        amax1 = DigitalToAnalog(max1);
+//        amax2 = DigitalToAnalog(max2);
+        amax1 *= 19.19;         // H(s) for output to transformer
+        amax1 *= 3.85;         // H(s) for transformer
+        amax1 /= 1.414;
+
+
+        sprintf(message,"RMS Voltage is = %f \r\n", amax1);               // Print out our Max value across Uart
+        PrintString(message);
+        sprintf(message,"Peak 1 = %f, Peak 2 = %f \r\n", max1, max2);               // Print out our Max value across Uart
+        PrintString(message);
+        sprintf(message,"Max index's %d and %d \r\n", maxIndex1, maxIndex2);               // Print out our Max Index
+        PrintString(message);
+        sprintf(message,"Min Value 1 = %f, Min Value 2 = %f \r\n", min1, min2);               // Print out our min value across Uart
+        PrintString(message);
+        sprintf(message,"Min Indexs are %d and %d \r\n ", minIndex1, minIndex2);               // Print out our min value across Uart
+        PrintString(message);
+        sprintf(message,"Zero Indexes = %d and %d and %d and %d \r\n ", midpoints1[0], midpoints1[1], midpoints1[2], midpoints1[3]);               // Print out our min value across Uart
+        PrintString(message);
+        sprintf(message,"Frequency1 = %f and frequency2 = %f \r\n ", frequency1, frequency2);               // Print out our min value across Uart
+        PrintString(message);
+        sprintf(message,"Zero Crossing Value = %d \r\n \r\n ", midPointValue);               // Print out our min value across Uart
+        PrintString(message);
+
+
+        sprintf(message,"Voltage Array Below \r\n \r\n ");               // Print out our min value across Uart
+        PrintString(message);
+
+        for (i = 0; i < Num_of_Results; i++)
+        {
+            analog = buffer0[i];
+            sprintf(message,"%f \r\n ", analog);               // Print out our Max value across Uart
+            PrintString(message);
+        }
+
+// CALC VALUES FOR CURRENT ARRAY
+
+        midPointIndex = 0;
+
+        // CALC ARRAY AVERAGE
+        for(i = 0; i < Num_of_Results; i++)
+        {
+            midPointValue += buffer1[i];
+        }
+        midPointValue /= Num_of_Results;
+
+        // CHECK IF WE'RE ABOVE MIDPOINT OR BELOW
+        if (buffer1[0] > midPointValue)
+        {
+            isTop = 1;
+        }
+
+        // CALC MIN AND MAX
+        for (i = 0; i < Num_of_Results/2; i++)
+        {
+            if ((isTop == 1) && (buffer1[i] > max1))
+            {
+                max1 = buffer1[i];
+                maxIndex1 = i;
+            }
+            else if ((isTop == 0) && (buffer1[i] < min1))
+            {
+                min1 = buffer1[i];
+                minIndex1 = i;
+            }
+            else if ((isTop == 1) && (buffer1[i] < midPointValue))
+            {
+                midpoints[midPointIndex] = i;
+                midPointIndex++;
+                isTop = 0;
+                i += skipIndex;
+            }
+            else if ((isTop == 0) && (buffer1[i] > midPointValue))
+            {
+                midpoints[midPointIndex] = i;
+                midPointIndex++;
+                isTop = 1;
+                i += skipIndex;
+            }
+        }
+
+        for (i = Num_of_Results/2; i < Num_of_Results; i++)
+        {
+            if ((isTop == 1) && (buffer1[i] > max2))
+            {
+                max2 = buffer1[i];
+                maxIndex2 = i;
+            }
+            else if ((isTop == 0) && (buffer1[i] < min2))
+            {
+                min2 = buffer1[i];
+                minIndex2 = i;
+            }
+            else if (isTop == 1 && (buffer1[i] < midPointValue))
+            {
+                midpoints[midPointIndex] = i;
+                midPointIndex++;
+                isTop = 0;
+                i += skipIndex;
+            }
+            else if (isTop == 0 && (buffer1[i] > midPointValue))
+            {
+                midpoints[midPointIndex] = i;
+                midPointIndex++;
+                isTop = 1;
+                i += skipIndex;
+            }
+         }
+
+        // CALCULATE PERIOD AND FREQUENCY
+
+        period = midpoints[3] - midpoints[1];
+        period = period * 0.0000029;
+        frequency2 = 1 / period;
+
+        period = midpoints[2] - midpoints[0];
+        period = period * 0.0000029;
+        frequency1 = 1 / period;
+
+        sprintf(message,"\r\n Digital Peak Value 1 = %f, Peak Value 2 = %f \r\n ", max1, max2);               // Print out our Max value across Uart
+        PrintString(message);
+        sprintf(message,"Max index's are %d and %d \r\n ", maxIndex1, maxIndex2);               // Print out our Max Index
+        PrintString(message);
+        sprintf(message,"Digital Min Value 1 = %f, Min Value 2 = %f \r\n ", min1, min2);               // Print out our min value across Uart
+        PrintString(message);
+        sprintf(message,"Min Index Values are %d and %d \r\n ", minIndex1, minIndex2);               // Print out our min value across Uart
+        PrintString(message);
+        sprintf(message,"Zero Crossing Indexes = %d and %d and %d and %d \r\n ", midpoints[0], midpoints[1], midpoints[2], midpoints[3]);               // Print out our min value across Uart
+        PrintString(message);
+        sprintf(message,"Frequency1 = %f and frequency2 = %f \r\n ", frequency1, frequency2);               // Print out our min value across Uart
+        PrintString(message);
+        sprintf(message,"Zero Crossing Value = %d \r\n \r\n ", midPointValue);               // Print out our min value across Uart
+        PrintString(message);
+
+        // Calc Phase shift
+        analog = midpoints1[0] - midpoints[0];              // Difference between phase index's
+        analog /= 980;                                      // Divide by samples per period to get into seconds
+        analog -= .0000058;                                 // Subtract the ADC setup phase shift
+        analog *= 360;                                      // Multiply to get into degrees, (360deg in 1 cycle)
+
+        sprintf(message,"Phase Shift in Deg = %f \r\n ", analog);               // Print out our min value across Uart
+        PrintString(message);
+
+// CALC CURRENT
+        amax1 = DigitalToAnalog(max1);
+//        amax2 = DigitalToAnalog(max2);
+        amax1 *= 0.13;         // H(s) for output to transformer
+        sprintf(message,"Current is %f A \r\n ", amax1);               // Print out our min value across Uart
+        PrintString(message);
+
+
+        sprintf(message,"Current Values Below \r\n \r\n ");               // Print out our min value across Uart
+        PrintString(message);
+
+        for (i = 0; i < Num_of_Results; i++)
+        {
+            analog = buffer1[i];
+            sprintf(message,"%f \r\n ", analog);               // Print out our Max value across Uart
+            PrintString(message);
+        }
+
+        TBCTL = TBSSEL_2 + MC_1 + TBCLR;          // SMCLK, clear TBR, up mode
+        DMA0DA = (void (*)())&buffer0[0];         // Reinitialize DMA
+        DMA0CTL |= DMAEN;
+        DMA_Flag = 0;
+    }  // if (DMA_Flag)
+  }  // while(1)
+}  // main()
+
+
+/**************************** DigitlaToAnalog ******************************
+Description: Takes a digital value from converted by the ADC and converts
+             the value back to an analog value.
+****************************************************************************/
+float DigitalToAnalog(float value)
+{
+    value /= 4096;
+    value *= 2.5;
+    return value;
+}
+
+/******************************* FrequencyCalc ******************************
+Description: Takes in two index values and calculates period then performs
+             1/p to calculate frequency. Time between samples is 1.25*10^-5s
+****************************************************************************/
+/*
+float FrequencyCalc (int index1, int index2)
+{
+    int period = 0;
+    float frequency = 0;
+
+    period = index2 - index1;                           // Difference between indexes
+//    period *= 0.0000125;                                // Multiply period by sampling time to get period into seconds
+                                                        // Maybe scale everything and use int calcs for efficiency and better accuracy
+    frequency = period;
+}
+*/
+/************************************   Assign ******************************
+Description: Assign takes the parsed commands and changes the operation of
+             the instrument.
+****************************************************************************/
+int Assign(char option, long value, int Count)
+{
+  int status = ERR_OK;
+  char message[SER_BUFFER_SIZE];
+
+  switch (option)       {
+    case 'd':  // Update Clock
+    case 'D':
+        if      (Count == 1)    clock_Time.tm_hour = (uint8)(value);
+        else if (Count == 2)    clock_Time.tm_min  = (uint8)(value);
+        else if (Count == 3)    clock_Time.tm_sec  = (uint8)(value);
+        else if (Count == 4)    clock_Time.tm_mday = (uint8)(value);
+        else if (Count == 5)    clock_Time.tm_mon  = (uint8)(value);
+        else if (Count == 6)    clock_Time.tm_year = value;
+        else if (Count == 7)    clock_Time.tm_isdst= (uint8)value;
+        break;
+      case 'f':             //  SampleRate
+      case 'F':
+//        TBCCR2 = (int)value;
+//        TBCCR0 = (int)value;
+        break;
+      case 'h':             //  HeadPhone ON/OFF control
+      case 'H':
+//          if      (value == 1) P2OUT &= ~BIT6;
+//          else if (value == 0) P2OUT |= BIT6;
+          break;
+      default:
+          sprintf (message, "%c:%d Invalid Assignment\r\n", option, value);
+          PrintString(message);
+          status = ERR_VALUE;
+          break;
+  }
+  return (status);
+}
+
+/*****************************************************************************
+    InitUART function - set constants & I/O
+   Description: Echo a received character, RX ISR used. Normal mode is LPM0.
+   USCI_A1 RX interrupt triggers TX Echo.
+   Baud rate divider with 1MHz = 1MHz/115200 = ~8.7 - MUST CHANGE if DCOCTL changes
+*****************************************************************************/
+void InitUart(void) {
+  P3SEL = 0xC0;                             // P3.6,7 = USCI_A1 TXD/RXD
+  UCA1CTL1 |= UCSSEL_2;                     // SMCLK
+  UCA1BR0 = 69;                              // 8MHz 115200
+  UCA1BR1 = 0;                              // 8MHz 115200
+  UCA1MCTL = UCBRS2;                        // Modulation UCBRSx = 4 for 8MHz
+  UCA1CTL1 &= ~UCSWRST;                     // **Initialize USCI state machine**
+  UC1IE |= UCA1RXIE;                          // Enable USCI_A0 RX interrupt
+}
+
+
+/*****************************************************************************
+    InitSystem function - set constants & I/O
+*****************************************************************************/
+void InitSystem(void) {
+  unsigned int i;
+
+  WDTCTL = WDTPW + WDTHOLD;     // Stop watchdog timer
+  // set first functionality to all ports
+  BCSCTL1 = CALBC1_8MHZ;                    // Set DCO to 1MHz
+  DCOCTL = CALDCO_8MHZ;
+  BCSCTL2 = 0;                  // SMCLK = MCLK = DCOCLK / 1
+  for (i = 0xfffe; i > 0; i--);             // Delay for XTAL stabilization
+
+  P1SEL = 0x00;
+  P2SEL = 0x00;     // P2SEL must have BIT6/7 HIGH to enable 32kHz crystal, ACLK Active, P2.3 - P2.4 TA
+  P3SEL = 0x00;
+  P4SEL = 0x00;
+  P5SEL = 0x00;
+  P6SEL = BIT1 + BIT2;                      // Enable A/D on P6.1 and P6.2
+  P7SEL = 0x00;
+  P8SEL = 0x00;
+
+  //set pin direction and initialize outputs
+  P1DIR |= BIT0;                            // P1.0 output
+//  P6DIR &= ~(BIT1);              // Set P6.1 as input
+  TACCTL0 = 0x00;                // TACCR1 toggle, interrupt enabled
+  TACCTL1 = 0x00;
+  TACCTL2 = 0x00;
+  TBCCTL0 = 0x00;
+  TBCCTL1 = 0x00;
+  TBCCTL2 = 0x00;
+
+  ADC12MCTL0 = INCH_1 + SREF_1;                                 // Use A1 for P6.1
+  ADC12MCTL1 = INCH_2 + SREF_1 + EOS;                           // Use A2 for P6.2
+  ADC12IFG = 0x00;                                              // clear adc12 ifg
+  ADC12CTL1 = SHS_3 + SHP + CONSEQ_3 + ADC12SSEL_0 + ADC12DIV_0;      // S&H TB.OUT1, rep. single chan, SMCLK
+  ADC12CTL0 = REF2_5V + REFON + ADC12ON + MSC + SHT0_2;         // VRef 2.5V, Turn on ADC12, Multi-channel, sample hold 32 cycles
+  ADC12CTL0 |= ENC;                                             // Enable ADC12
+
+  DMACTL0 = DMA0TSEL_6 + DMA1TSEL_6;
+
+  DMA0SA = (void (*)())&ADC12MEM0;          // Src address = ADC12 module
+  DMA0DA = (void (*)())&buffer0[0];         // Dst address
+  DMA0SZ = Num_of_Results;                               // Size in words set to 500 in gfa.h
+  DMA0CTL &= ~DMAIFG;                           //
+  DMA0CTL = DMADSTINCR_3 + DMADT_4 + DMAIE + DMAEN;                // Sng rpt, config
+
+  DMA1SA = (void (*)())&ADC12MEM1;          // Src address = ADC12 module
+  DMA1DA = (void (*)())&buffer1[0];         // Dst address
+  DMA1SZ = Num_of_Results;                               // Size of transfer
+  DMA1CTL &= ~DMAIFG;                           //
+  DMA1CTL = DMADSTINCR_3 + DMADT_4 + DMAIE + DMAEN;                // Sng rpt, config
+}
+
+/***************************************************************************
+                       InitTimers
+    Description: This function initializes the tic timer
+                 TimerA is set as a up count timer with ACLK (32KHz)
+                   as source, count up to value in TACCR0,
+                   interrupt on compare (2 Hz)
+
+    This must be called after SetDCO
+***************************************************************************/
+void InitTimers(void)
+{
+#define AdcRate 100
+
+  TACTL = 0;
+  TACTL = TASSEL_2 + TACLR + ID_3 + MC_1;      // SMCLK/8, clear TAR
+  TACCTL0 = CCIE;                       // CCR0 interrupt enabled
+  TACCR0 = 50000;
+
+
+  TBCCR0 = AdcRate;                             // Init TBCCR0 in up mode w/ sample period (what are we setting the period to?)
+  TBCCR1 = (AdcRate >> 1);                        // Trigger for ADC12 SC
+  TBCCTL1 = OUTMOD_7;                       // Reset OUT1 on EQU1, set on EQU0
+  TBCTL = TBSSEL_2 + MC_1 + TBCLR;          // SMCLK, clear TBR, up mode
+}
+
+/****************************************************************************
+                            ParseString
+Description: Separate leading character (command) and terminator '=' from
+             the data.  Data is comma separated.
+****************************************************************************/
+int ParseString(char * theString, int index)
+{
+    long value;
+    int Count = 0;
+    char action[SER_BUFFER_SIZE + 1];
+    char *pTest;
+
+    pTest = strtok(theString, ",");
+    do  {
+        strncpy(&action[0], pTest, (unsigned long)index + 1);
+        if (Count == 0) value = atoi(&action[2]);
+        else            value = atoi(&action[0]);
+        Assign((char)theString[0], value, Count);
+        Count++;
+        pTest = strtok(NULL,",");
+    }   while (pTest != NULL);
+    return (Count);
+}
+
+
+/****************************************************************************
+                            PrintDate
+Description: Prints a formatted date.
+****************************************************************************/
+void PrintDate(int month, int day, int year)
+{
+    int i, j;
+    char digit[11];
+
+    digit[0] = ' ';
+    digit[1] = '0' + (unsigned char) (month / 10);
+    digit[2] = '0' + (unsigned char) (month % 10);
+    digit[3] = '/';
+    digit[4] = '0' + (unsigned char) (day / 10);
+    digit[5] = '0' + (unsigned char) (day % 10);
+    digit[6] = '/';
+    digit[7] = '0' + (unsigned char) (year / 1000);
+    i = year / 1000;
+    i *= 1000;
+    j = year - i;
+    digit[8] = '0' + (unsigned char) (j / 100);
+    i = j / 100;
+    i *= 100;
+    j -= i;
+    digit[9] = '0' + (unsigned char) (j / 10);
+    digit[10] = '0' + (unsigned char) (j % 10);
+    strcat(message, digit);   //  PrintString(digit);
+}
+
+
+/****************************************************************************
+                            PrintDec
+Description: Prints a long value as a decimal.
+****************************************************************************/
+void PrintDec(long value)
+{
+    #define MAX_DECIMAL 12
+
+    int i, NegFlag = 0;
+    long iInt = value;
+    char digit[MAX_DECIMAL + 1];
+
+    iInt = value;
+    if (iInt & 0x80000000)      {
+            iInt ^= 0xFFFFFFFF;
+            iInt += 1;
+            NegFlag = 1;
+    }
+    digit[MAX_DECIMAL] = '\0';
+    for (i = MAX_DECIMAL - 1; i >= 0; i--)  {
+        digit[i] = '0' + (unsigned char) (iInt % 10);
+        iInt = iInt / 10;
+        if (iInt == 0) break;
+    }
+    if (NegFlag)   digit[--i] = '-';
+    strcat(message, &digit[i]); // PrintString(&digit[i]);
+}
+
+
+/****************************************************************************
+                            PrintTime
+Description: Prints a formatted time.
+****************************************************************************/
+void PrintTime(int hour, int min, int sec)
+{
+    char digit[9];
+
+    digit[0] = ' ';
+    digit[1] = '0' + (unsigned char) (hour / 10);
+    digit[2] = '0' + (unsigned char) (hour % 10);
+    digit[3] = ':';
+    digit[4] = '0' + (unsigned char) (min / 10);
+    digit[5] = '0' + (unsigned char) (min % 10);
+    digit[6] = ':';
+    digit[7] = '0' + (unsigned char) (sec / 10);
+    digit[8] = '0' + (unsigned char) (sec % 10);
+    strcat(message, digit);     // PrintString(digit);
+}
+
+
+/******************************* PrintString ********************************
+
+Description: Print null terminated ascii string to USB port
+****************************************************************************/
+void PrintString(char * theString)
+{
+  unsigned int i;
+  int stringLength = strlen(theString);
+
+  for (i = 0; i < stringLength; i++)    {
+    if (theString[i] == '\0') break;
+    while (!(UC1IFG & UCA1TXIFG));
+    UCA1TXBUF = theString[i];
+    // Uart1TxChar(theString[i]);
+  }
+}
+
+// *********************** SerialReply **************************************
+//  Provide a mechanism to query the system
+// **************************************************************************
+void SerialReply(char option)
+{
+  switch (option)
+  {
+      case 'p': // Recording Period Dwell
+      case 'P':
+          PrintString("P=");
+          PrintString("%\r\n");
+          break;
+
+      default:
+       PrintString("---\r\n");
+       break;
+  }
+}
+
+/****************************************************************************
+                      ServiceSerial
+Description: Process received USB data
+****************************************************************************/
+int ServiceSerial(void)
+{
+  static int menuFlag = 1, CommaCnt = 0;
+  static uint8 theChar, index = 0;
+  static char rxBuff[SER_BUFFER_SIZE];
+  int status = 0;
+
+  while (RxWriteIndex != RxReadIndex)   {
+    theChar = RxBuffer[RxReadIndex];
+    RxReadIndex = ((RxReadIndex + 1) & (SER_BUFFER_SIZE - 1));
+    switch(theChar)
+    {
+      case 0x00:
+          break;
+      case CR:    // carriage return
+          menuFlag = 0;
+          PrintString("\r\n");
+          rxBuff[index] = (char)0x00;   // Null terminate the string
+          if (rxBuff[1] == '=') {
+             status = ParseString((char *) rxBuff, index);
+          }
+          else if (rxBuff[1] == '?')    {
+             SerialReply((char)rxBuff[0]);
+          }
+          else  status = -1;
+            for (index = 0; index < (SER_BUFFER_SIZE - 1); index++) rxBuff[index] = '\0';
+            index = 0;
+            break;
+      case ',':
+          rxBuff[index] = (char)theChar;
+          index++;
+          CommaCnt++;
+          Uart1TxChar(theChar);
+          break;
+      case BS:    // backspace
+          if (index > 0)        {
+            index--;
+            rxBuff[index] = (char) 0x00;
+          }
+          Uart1TxChar(theChar);
+          break;
+      default:
+          rxBuff[index] = (char) theChar;
+          index++;
+          index &= (SER_BUFFER_SIZE - 1);
+          Uart1TxChar(theChar);
+          break;
+    }
+    if (0 == menuFlag) break;
+  } // while (RxWriteIndex != RxReadIndex);
+  return ( (int) status);
+}
+
+// Load TxBuffer and enable TX interrupt to send character out the USB Serial Port
+int Uart1TxChar(uint8 c)
+{
+  UC1IE &= ~UCA1TXIE;
+  TxBuffer[TxWriteIndex++] = c;
+  TxWriteIndex &= (SER_BUFFER_SIZE - 1);
+//  TxCharCount++;
+  UC1IE |= UCA1TXIE;
+  return (int)TxWriteIndex;
+}
+
+//***************************************************************************
+// Timer A1 interrupt service routine
+#pragma vector=TIMERA0_VECTOR
+__interrupt void Timer_A (void)
+{
+  P1OUT ^= 0x08;                            // Toggle P1.3
+  ISR_Flag |= ISRFLG_TWOHZ;
+  __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
+}
+
+//***************************************************************************
+#pragma vector=USCIAB1RX_VECTOR
+__interrupt void USCI1RX_ISR(void)
+{
+  ISR_Flag |= ISRFLG_USB_BIT;
+  while (!(UC1IFG & UCA1TXIFG));                // USCI_A0 TX buffer ready?
+
+  RxBuffer[RxWriteIndex++] = UCA1RXBUF;
+  RxWriteIndex &= (SER_BUFFER_SIZE - 1);
+
+  __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
+}
+
+
+//***************************************************************************
+#pragma vector=USCIAB1TX_VECTOR
+__interrupt void USCI1TX_ISR(void)
+{
+  if (TxReadIndex != TxWriteIndex)  {
+    UCA1TXBUF = TxBuffer[TxReadIndex++];
+    TxReadIndex &= (SER_BUFFER_SIZE -1);
+//    TxCharCount--;
+  }
+  else UC1IE &= ~UCA1TXIE;
+  __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
+}
+
+// Port 1 interrupt service routine *******************************
+#pragma vector=PORT1_VECTOR
+__interrupt void Port_1(void)
+{
+  P1IFG &= ~0x01;                          // P1.0 IFG cleared
+  __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
+}
+
+// DMA interrupt service routine
+#pragma vector = DMA_VECTOR
+__interrupt void DMA_ISR(void)
+{
+    P1OUT ^= BIT0;
+
+    switch(__even_in_range(DMAIV,16))
+    {
+      case 0: break;
+      case 2:                                 // DMA0IFG = DMA Channel 0
+        DMA_Flag = 1;
+        break;
+      case 4: break;                          // DMA1IFG = DMA Channel 1
+      case 6: break;                          // DMA2IFG = DMA Channel 2
+      case 8: break;                          // DMA3IFG = DMA Channel 3
+      case 10: break;                         // DMA4IFG = DMA Channel 4
+      case 12: break;                         // DMA5IFG = DMA Channel 5
+      case 14: break;                         // DMA6IFG = DMA Channel 6
+      case 16: break;                         // DMA7IFG = DMA Channel 7
+      default: break;
+    }
+
+   DMA0CTL &= ~DMAIFG;         // Clear DMA IFG
+  _bic_SR_register_on_exit(LPM0_bits);
+}
