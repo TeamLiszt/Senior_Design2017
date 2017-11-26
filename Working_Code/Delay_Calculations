@@ -70,7 +70,7 @@ char message[SER_BUFFER_SIZE];
 /****************************************************************************/
 void main(void)
 {
-  int i = 0, printFlag = 0;
+  int printFlag = 0;
   long Period = 320000000;
 
   InitSystem();
@@ -87,7 +87,7 @@ void main(void)
         TimerA_Flag = 0;
     }
 
-    if (printFlag == 90)
+    if (printFlag == 70)
     {
         TACTL = 0;
         TACTL = TASSEL_2 + TACLR + ID_3 + MC_0;      // SMCLK/8, clear TAR
@@ -104,7 +104,13 @@ void main(void)
         sprintf(message,"Frequency1 = %f and frequency2 = %f \r\n\r\n ", frequencyVoltage1, frequencyVoltage2);               // Print out our min value across Uart
         PrintString(message);
 
-        ADC12CTL0 |= ENC;                                             // Enable ADC12
+        ADC12MCTL0 = INCH_1 + SREF_1;                                 // Use A1 for P6.1
+        ADC12MCTL1 = INCH_2 + SREF_1 + EOS;                           // Use A2 for P6.2
+        ADC12IFG = 0x00;                                              // clear adc12 ifg
+        ADC12CTL1 = SHS_3 + SHP + CONSEQ_3 + ADC12SSEL_0 + ADC12DIV_0;      // S&H TB.OUT1, rep. single chan, SMCLK
+        ADC12CTL0 = REF2_5V + REFON + ADC12ON + MSC + SHT0_3;         // VRef 2.5V, Turn on ADC12, Multi-channel, sample hold 32 cycles
+        ADC12CTL0 |= ENC;
+
         InitTimers();
 
         printFlag = 0;
