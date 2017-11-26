@@ -4,7 +4,7 @@
  *  Created on: March 2016
  *      Author: Aaron Miyasaki and Jacob Greig-Prine
  */
-
+//
 #include  <msp430x26x.h>
 #include <stdlib.h>   // atoi()
 #include <stdio.h>    // sprintf()
