@@ -1,8 +1,8 @@
 /*
  * main.c
  *
- *  Created on: March 2016
- *      Author: Aaron Miyasaki and Jacob Greig-Prine
+ *  Last Edited on: December 2017
+ *      Author: Cameron Bailey
  */
 
 #include  <msp430x26x.h>
@@ -39,6 +39,7 @@ int ISR_Flag = 0;
 int DMA_Flag = 0;
 int ADC_Flag = 0;
 int TimerA_Flag = 0;
+int TimerB_Flag = 0;
 tm_t clock_Time = {0, 0, 12, 7, 11, 2016, 1};   //(sec, min, hr, day, mon, year,0);
 
 int skipIndex = Num_of_Results / 16, isTop = 0;
@@ -93,10 +94,10 @@ void main(void)
         TimerA_Flag = 0;
     }
 */
-    if (printFlag == 0)
+    if (TimerA_Flag == 2)
     {
         TACTL = 0;
-        TACTL = TASSEL_2 + TACLR + ID_3 + MC_0;      // SMCLK/8, clear TAR
+        TACTL |= MC_0;      // SMCLK/8, clear TAR
         TACCTL0 &= ~CCIE;
         ADC12CTL0 &= ~ENC;
         ADC12IFG = 0;
@@ -106,8 +107,19 @@ void main(void)
 
         calcVoltage();
 //        calcCurrent();
-        frequencyVoltage1 *= 0.9871;                //Value use to correct to 60hz
+        frequencyVoltage1 *= 0.98712;
         Period = 320000000 / frequencyVoltage1;
+/*
+        for (i = 0; i < Num_of_Results; i++)
+        {
+            analog = buffer0[i];
+            sprintf(message,"%f \r\n ", analog);               // Print out our Max value across Uart
+            PrintString(message);
+        }
+        sprintf(message,"%f \r\n\r\n\r\n\r\n ");               // Print out our Max value across Uart
+        PrintString(message);
+*/
+
 
         tm2time(&clock_Time);
         sprintf(message,"X= %ld, %ld, %d, %d, %d, %ld, ", Period, frequency, battCurrent, battSOC, TotWsec, ChargeCost);        // SOC
@@ -115,6 +127,12 @@ void main(void)
         sprintf(message, "%02d:%02d:%02d %02d/%02d/%02d\r\n", (int)clock_Time.tm_hour, (int)clock_Time.tm_min, (int)clock_Time.tm_sec, (int)clock_Time.tm_mon, (int)clock_Time.tm_mday, (int)clock_Time.tm_year);        PrintString(message);
         clock_Time.tm_sec += 1;
 
+/*
+        sprintf(message,"%ld \r\n", Period);               // Print out our Max value across Uart
+        PrintString(message);
+        sprintf(message,"Frequency1 = %f \r\n\r\n ", frequencyVoltage1);               // Print out our min value across Uart
+        PrintString(message);
+*/
         ADC12MCTL0 = INCH_1 + SREF_1;                                 // Use A1 for P6.1
         ADC12MCTL1 = INCH_2 + SREF_1 + EOS;                           // Use A2 for P6.2
         ADC12IFG = 0x00;                                              // clear adc12 ifg
@@ -131,7 +149,12 @@ void main(void)
 
         ADC12IFG = 0x00;                                              // clear adc12 ifg
 
+        TimerA_Flag = 0;
         printFlag = 0;
+
+        TACTL = TASSEL_2 + TACLR + ID_3 + MC_1;      // SMCLK/8, clear TAR
+        TACCTL0 |= CCIE;
+        ADC12CTL0 |= ENC;
 
     }
   }  // while(1)
@@ -481,8 +504,8 @@ void InitTimers(void)
 
   TACTL = 0;
   TACTL = TASSEL_2 + TACLR + ID_3 + MC_1;      // SMCLK/8, clear TAR
-//  TACCTL0 = CCIE;                       // CCR0 interrupt enabled
-//  TACCR0 = 65535;
+  TACCTL0 = CCIE;                       // CCR0 interrupt enabled
+  TACCR0 = 65535;
 
 
   TBCCR0 = AdcRate;                             // Init TBCCR0 in up mode w/ sample period (what are we setting the period to?)
@@ -706,12 +729,9 @@ int Uart1TxChar(uint8 c)
 #pragma vector=TIMERA0_VECTOR
 __interrupt void Timer_A (void)
 {
-  ISR_Flag |= ISRFLG_TWOHZ;
-
-  TimerA_Flag = 1;
-
-  __bic_SR_register_on_exit(LPM4_bits + GIE);     // Exit LPMx mode
+  TimerA_Flag++;
 }
+
 
 //***************************************************************************
 #pragma vector=USCIAB1RX_VECTOR
